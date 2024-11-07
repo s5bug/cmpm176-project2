@@ -1,8 +1,9 @@
 // setup code, you can skip this
+import * as sss from 'sounds-some-sounds';
+(window as any).sss = sss;
 import 'pixi.js';
 import 'pixi-filters';
 import 'crisp-game-lib';
-declare function onLoad(): void;
 
 type State = "title" | "inGame" | "goToNextHole" | "giveUp" | "holeOut";
 type Ground = { type: string; height?: number; };

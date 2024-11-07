@@ -11,9 +11,6 @@ importers:
       crisp-game-lib:
         specifier: ^1.2.0
         version: 1.2.0
-      gif-capture-canvas:
-        specifier: ^1.1.0
-        version: 1.1.0
       pixi-filters:
         specifier: ^6.0.5
         version: 6.0.5(pixi.js@8.5.2)
@@ -403,9 +400,6 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
-
-  gif-capture-canvas@1.1.0:
-    resolution: {integrity: sha512-kusJiEzUCrnJshzbYtZGZkMip08PsFQ7IvTODIXh264psekkLK9/NrhzPPhWfXOQyxmFjgsSfEI/Aktbo2vQlA==}
 
   ismobilejs@1.1.1:
     resolution: {integrity: sha512-VaFW53yt8QO61k2WJui0dHf4SlL8lxBofUuUmwBo0ljPk0Drz2TiuDW4jo3wDcv41qy/SxrJ+VAzJ/qYqsmzRw==}
@@ -855,8 +849,6 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
-
-  gif-capture-canvas@1.1.0: {}
 
   ismobilejs@1.1.1: {}
 
