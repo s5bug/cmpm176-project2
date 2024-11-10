@@ -1,11 +1,23 @@
 // setup code, you can skip this
 import * as sss from 'sounds-some-sounds';
-(window as any).sss = sss;
 import 'pixi.js';
 import 'pixi-filters';
 import 'crisp-game-lib';
+import {
+  base30DigitToPassLetter,
+  GolfRoom,
+  hostMpRoom, joinMpRoom,
+  NameAndPass, numColors, numShapes,
+  PassLetter,
+  passLetterToBase30Digit,
+  Shape,
+  ShapeColor
+} from "./multiplayer.ts";
+import {i} from "vite/dist/node/types.d-aGj9QkWt";
 
-type State = "title" | "inGame" | "goToNextHole" | "giveUp" | "holeOut";
+(window as any).sss = sss;
+
+type State = "title" | "inGame" | "goToNextHole" | "giveUp" | "holeOut" | "multiLobby" | "passwordEntry";
 type Ground = { type: string; height?: number; };
 type Platform = { pos: Vector; grounds: Ground[]; };
 type Ball = {
@@ -27,7 +39,76 @@ llll
 llll
  ll
  `,
+  `
+  ll  
+ llll 
+llllll
+llllll
+ llll
+  ll
+`,
+  `
+l    l
+ l  l
+  ll
+  ll
+ l  l
+l    l
+`,
+  `
+  ll
+  ll
+ llll
+ llll
+llllll
+llllll
+`,
+  `
+llllll
+l    l
+l ll l
+l ll l
+l    l
+llllll
+`,
+  `
+  ll  
+  ll
+llllll
+ llll
+ll  ll
+l    l
+`,
+  `
+  rrrr
+ r  rr
+r  rrr
+r rr r
+ rr  r
+  rrrr
+`,
+  `
+     G
+  g GG
+ ggGGG
+gggGG
+ ggG
+  g
+`
 ];
+
+const replacements: Color[] = ["red", "yellow", "green", "cyan", "blue", "purple"]
+
+function plToCharacter(pl: PassLetter): string {
+  return String.fromCharCode("b".charCodeAt(0) + pl.shape)
+}
+
+const backspaceCharacter = "g"
+const enterCharacter = "h"
+
+function plToColor(pl: PassLetter): Color {
+  return replacements[pl.color]
+}
 
 const options = {
   viewSize: { x: 150, y: 100 },
@@ -53,6 +134,10 @@ function update() {
   }
   if (state === "title") {
     updateTitle();
+  } else if (state === "multiLobby") {
+    updateMultiLobby();
+  } else if (state === "passwordEntry") {
+    updatePasswordEntry();
   } else if (state === "inGame") {
     updateInGame();
   } else if (state === "goToNextHole") {
@@ -67,6 +152,12 @@ function update() {
 let easyButton: Button;
 let mediumButton: Button;
 let hardButton: Button;
+
+let hostButton: Button;
+let joinButton: Button;
+
+let isHost: boolean = false;
+let room: GolfRoom = undefined!;
 
 function initTitle() {
   state = "title";
@@ -91,6 +182,26 @@ function initTitle() {
     isToggle: false,
     onClick: () => initInGame(2),
   });
+  hostButton = getButton({
+    text: "Host",
+    pos: { x: 15, y: 90 },
+    size: { x: 50, y: 7 },
+    isToggle: false,
+    onClick: () => {
+      isHost = true
+      room = hostMpRoom("red")
+      state = "multiLobby"
+    }
+  });
+  joinButton = getButton({
+    text: "Join",
+    pos: { x: 80, y: 90 },
+    size: { x: 50, y: 7 },
+    isToggle: false,
+    onClick: () => {
+      state = "passwordEntry"
+    }
+  })
   initBall();
   createHole(103);
 }
@@ -105,7 +216,114 @@ function updateTitle() {
   text("6 holes", 75, 58);
   updateButton(hardButton);
   text("9 holes", 75, 68);
+
   text("Click button to start", 20, 79);
+
+  updateButton(hostButton);
+  updateButton(joinButton);
+}
+
+function drawPassLetter(x: number, y: number, passLetter: PassLetter) {
+  const charIdx = plToCharacter(passLetter)
+  char(charIdx, x, y, { color: plToColor(passLetter) })
+}
+
+function drawPassLetters(x: number, y: number, passLetters: PassLetter[]) {
+  let tx = x;
+  passLetters.forEach(pl => {
+    drawPassLetter(tx, y, pl)
+    tx += 8
+  })
+}
+
+function drawPassword(x: number, y: number, password: NameAndPass) {
+  drawPassLetters(x, y, password.name)
+  drawPassLetters(x, y + 8, password.pass)
+}
+
+function updateMultiLobby() {
+  drawPassword(8, 8, room!.nameAndPass)
+
+  text("You:", 8, 40)
+  char("a", 32, 40, { color: room.getColor() })
+
+  const playerIds = room.getPlayerIds();
+
+  const otherPlayerIds = playerIds.slice(1)
+  text("Opponents: " + otherPlayerIds.length, 75, 4)
+  for(let i = 0; i < otherPlayerIds.length; i++) {
+    const playerId = otherPlayerIds[i];
+    const x = 78 + ((i % 6) * 10);
+    const y = 16 + (((i / 6) | 0) * 10);
+
+    const playerColor = room.getPlayerColors()[playerId] || "light_black";
+
+    char("a", x, y, { color: playerColor });
+  }
+}
+
+let currentSymbols: PassLetter[] = []
+
+function updatePasswordEntry() {
+  const gridWidth = (8 * (numColors - 1)) + 6;
+  const startX = ((options.viewSize.x - gridWidth) / 2) | 0;
+  const startY = 62;
+
+  text("Password: ", 40, 10);
+
+  for(let shape = 0; shape < numShapes; shape++) {
+    for(let color = 0; color < numColors; color++) {
+      const pl: PassLetter = { shape, color }
+
+      const x = startX + (color * 8);
+      const y = startY + (shape * 8);
+
+      char(plToCharacter(pl), x, y, { color: plToColor(pl) })
+
+      if(input.isJustPressed && input.pos.x >= (x - 3) && input.pos.y >= (y - 3) &&
+          input.pos.x < (x + 3) && input.pos.y < (y + 3)) {
+        if(currentSymbols.length < 12)
+          currentSymbols.push(pl)
+      }
+    }
+  }
+
+  for(let i = 0; i < currentSymbols.length; i++) {
+    const pl = currentSymbols[i]
+
+    const row = (i / 6) | 0;
+    const column = i % 6;
+
+    const x = startX + (8 * column)
+    const y = 20 + (8 * row)
+
+    char(plToCharacter(pl), x, y, { color: plToColor(pl) })
+  }
+
+  if(currentSymbols.length > 0) {
+    char(backspaceCharacter, 60, 48)
+    if (input.isJustPressed && input.pos.x >= 57 && input.pos.y >= 45 &&
+        input.pos.x < 63 && input.pos.y < 51) {
+      currentSymbols.length--;
+    }
+  }
+
+  if(currentSymbols.length == 12) {
+    char(enterCharacter, 80, 48)
+    if (input.isJustPressed && input.pos.x >= 77 && input.pos.y >= 45 &&
+        input.pos.x < 83 && input.pos.y < 51) {
+      isHost = false
+      joinMpRoom({
+        // @ts-ignore
+        name: currentSymbols.slice(0, 6),
+        // @ts-ignore
+        pass: currentSymbols.slice(6, 12)
+      }, "green").then(r => {
+        room = r
+        state = "multiLobby"
+      })
+    }
+  }
 }
 
 const bgmSeeds = [1013, 1023, 1024];

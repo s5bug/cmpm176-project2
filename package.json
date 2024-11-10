@@ -15,8 +15,10 @@
   },
   "dependencies": {
     "crisp-game-lib": "^1.2.0",
+    "firebase": "^11.0.1",
     "pixi-filters": "^6.0.5",
     "pixi.js": "^8.5.2",
-    "sounds-some-sounds": "^3.1.0"
+    "sounds-some-sounds": "^3.1.0",
+    "trystero": "^0.20.0"
   }
 }
