@@ -4,16 +4,11 @@ import 'pixi.js';
 import 'pixi-filters';
 import 'crisp-game-lib';
 import {
-  base30DigitToPassLetter,
   GolfRoom,
   hostMpRoom, joinMpRoom,
   NameAndPass, numColors, numShapes,
-  PassLetter,
-  passLetterToBase30Digit,
-  Shape,
-  ShapeColor
+  PassLetter
 } from "./multiplayer.ts";
-import {i} from "vite/dist/node/types.d-aGj9QkWt";
 
 (window as any).sss = sss;
 
@@ -243,6 +238,10 @@ function drawPassword(x: number, y: number, password: NameAndPass) {
 
 function updateMultiLobby() {
   drawPassword(8, 8, room!.nameAndPass)
+
+  if(isHost) {
+    text("Hosting", 8, 28)
+  }
 
   text("You:", 8, 40)
   char("a", 32, 40, { color: room.getColor() })
