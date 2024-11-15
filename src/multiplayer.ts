@@ -104,10 +104,11 @@ export type BallStatePayload = {
     vx: number,
     vy: number,
     color: Color,
-    lives: number
+    lives: number,
+    spectating: boolean
 }
 
-export type SpectatorModePayload = {
+export type HoleLostPayload = {
     totalTicksLived: number
 }
 
@@ -118,8 +119,8 @@ export type HoleFinishedPayload = {
 
 export type GameOverPayload = {
     // map of Id to totalTicksLived
-    winnersLeastToGreatest: Record<string, number>,
-    losersGreatestToLeast: Record<string, number>,
+    winners: Record<string, number>,
+    losers: Record<string, number>,
 }
 
 export interface RawGolfRoom {
@@ -162,8 +163,8 @@ export interface RawGolfRoom {
     sendBallState: ActionSender<BallStatePayload>,
     recvBallState: ActionReceiver<BallStatePayload>,
     // if they run out of lives, they announce that they are entering spectator mode
-    sendSpectatorMode: ActionSender<SpectatorModePayload>,
-    recvSpectatorMode: ActionReceiver<SpectatorModePayload>,
+    sendHoleLost: ActionSender<HoleLostPayload>,
+    recvHoleLost: ActionReceiver<HoleLostPayload>,
     // or if they complete the hole, they announce how many lives they completed it with and how many ticks it took
     sendHoleFinished: ActionSender<HoleFinishedPayload>,
     recvHoleFinished: ActionReceiver<HoleFinishedPayload>,
@@ -198,7 +199,7 @@ const createActions = (nameAndPass: NameAndPass, rawRoom: Room): RawGolfRoom => 
     const [sendLobbyInfo, recvLobbyInfo] = rawRoom.makeAction<LobbyInfoPayload>("lobInfo")
     const [sendStartHole, recvStartHole] = rawRoom.makeAction<number>("startHole")
     const [sendBallState, recvBallState] = rawRoom.makeAction<BallStatePayload>("ballState")
-    const [sendSpectatorMode, recvSpectatorMode] = rawRoom.makeAction<SpectatorModePayload>("spectate")
+    const [sendHoleLost, recvHoleLost] = rawRoom.makeAction<HoleLostPayload>("holeLose")
     const [sendHoleFinished, recvHoleFinished] = rawRoom.makeAction<HoleFinishedPayload>("holeFin")
     const [sendGameOver, recvGameOver] = rawRoom.makeAction<GameOverPayload>("gameOver")
 
@@ -222,8 +223,8 @@ const createActions = (nameAndPass: NameAndPass, rawRoom: Room): RawGolfRoom => 
         recvStartHole,
         sendBallState,
         recvBallState,
-        sendSpectatorMode,
-        recvSpectatorMode,
+        sendHoleLost,
+        recvHoleLost,
         sendHoleFinished,
         recvHoleFinished,
         sendGameOver,

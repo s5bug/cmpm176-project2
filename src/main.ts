@@ -7,13 +7,15 @@ import {
   RawGolfRoom,
   hostMpRoom, joinMpRoom,
   NameAndPass, numColors, numShapes,
-  PassLetter, BallStatePayload
+  PassLetter, BallStatePayload, HoleFinishedPayload, HoleLostPayload, GameOverPayload
 } from "./multiplayer.ts";
 
 (window as any).sss = sss;
 
 type TitleState = {
-  state: "title"
+  state: "title",
+  ball: Ball,
+  platforms: Platform[]
 }
 type PasswordEntryState = {
   state: "passwordEntry",
@@ -43,18 +45,23 @@ type InGameState = {
   ourBall: Ball,
   ourLives: number,
   otherBalls: Record<string, BallStatePayload>,
+  spectating: boolean,
+  finishedBalls: Record<string, HoleFinishedPayload>,
+  lostBalls: Record<string, HoleLostPayload>
   mapSeed: number,
   platforms: Platform[],
   ticksLeft: number,
   cachedColors: Record<string, Color>,
   hostId: string,
+  totalTicksLived: number,
+  ticksLivedThisHole: number
 }
 type LeaderboardState = {
   state: "leaderboard",
   room: RawGolfRoom,
   isHost: boolean,
-  winnersLeastToGreatest: Record<string, number>,
-  losersGreatestToLeast: Record<string, number>,
+  winners: Record<string, number>,
+  losers: Record<string, number>,
   colors: Record<string, Color>,
   hostId: string,
 }
@@ -160,19 +167,10 @@ const options = {
 };
 
 let state: State;
-let platforms: Platform[];
-let ball: Ball;
-let ballCount: number;
-let holeCount: number;
-let courseDifficulty: number;
-let instructionTicks: number;
-let holeStartingTicks: number;
-let courseTime: number;
 
 function update() {
   if (!ticks) {
     document.title = "SKY GOLF";
-    instructionTicks = 200;
     initGame();
   }
   switch (state.state) {
@@ -196,9 +194,17 @@ let joinButton: Button;
 
 let readyButton: Button;
 let changeColorButton: Button;
+let startGameButton: Button;
+
+let backToLobbyButton: Button;
 
 function initGame() {
-  state = { state: "title" };
+  const ball: Ball = initBall();
+  state = {
+    state: "title",
+    ball,
+    platforms: createHole(103, ball),
+  };
   hostButton = getButton({
     text: "Host",
     pos: { x: 15, y: 45 },
@@ -232,11 +238,26 @@ function initGame() {
     isToggle: false,
     onClick: advanceColor
   })
-  initBall();
-  createHole(103);
+  startGameButton = getButton({
+    text: "Start Game",
+    pos: { x: 4, y: 85 },
+    size: { x: 50, y: 7 },
+    isToggle: false,
+    onClick: startGameFromLobby
+  })
+
+  backToLobbyButton = getButton({
+    text: "To Lobby",
+    pos: { x: 4, y: 85 },
+    size: { x: 50, y: 7 },
+    isToggle: false,
+    onClick: returnToLobbyFromLeaderboard
+  })
 }
 
 function setupRoomHost() {
+  hostHoleSeedIdx = 0
+
   const newRoom = hostMpRoom()
   const newState: LobbyState = {
     state: "lobby",
@@ -328,8 +349,8 @@ function advanceColor() {
   }
 }
 
-function updateTitle(_: TitleState) {
-  drawHole();
+function updateTitle(ts: TitleState) {
+  drawHole(ts.platforms);
   color("black");
   text("SKY GOLF", 9, 38);
   updateButton(hostButton);
@@ -376,6 +397,10 @@ function updateLobby(lobbyState: LobbyState) {
 
   text("Ready: " + readyPlayers.length + "/" + playersToReadyCheck.length, 8, 80)
 
+  if(lobbyState.isHost && readyPlayers.length == playersToReadyCheck.length) {
+    updateButton(startGameButton)
+  }
+
   const playerIds = lobbyState.room.getPeerIds();
 
   text("Opponents: " + playerIds.length, 75, 4)
@@ -387,6 +412,104 @@ function updateLobby(lobbyState: LobbyState) {
     const playerColor = lobbyState.colors[playerId] || "light_black";
 
     char("a", x, y, { color: playerColor });
+  }
+}
+
+function startGameFromLobby() {
+  switch(state.state) {
+    case "lobby":
+      const seed = holeSeeds[hostHoleSeedIdx]
+      state.room.sendStartHole(seed)
+      nextHole(seed)
+      return;
+    default: return;
+  }
+}
+
+function nextHole(seed: number) {
+  switch(state.state) {
+    case "lobby": {
+      const ball = initBall()
+      const newState: InGameState = {
+        state: "inGame",
+        room: state.room,
+        isHost: state.isHost,
+        ballColor: state.colors[state.room.ownId],
+        ourBall: ball,
+        ourLives: 5,
+        spectating: false,
+        otherBalls: {},
+        finishedBalls: {},
+        lostBalls: {},
+        mapSeed: seed,
+        platforms: createHole(seed, ball),
+        ticksLeft: 60 * 50,
+        cachedColors: state.colors,
+        hostId: state.hostId,
+        totalTicksLived: 0,
+        ticksLivedThisHole: 0
+      }
+      ball.prevPos.set(ball.pos)
+
+      newState.room.recvBallState((bs, pid) => {
+        newState.otherBalls[pid] = bs
+      })
+      newState.room.recvHoleLost((hl, pid) => {
+        newState.lostBalls[pid] = hl
+      })
+      newState.room.recvHoleFinished((hl, pid) => {
+        newState.finishedBalls[pid] = hl
+      })
+      newState.room.recvGameOver(go => {
+        initLeaderboard(state as InGameState, go)
+      })
+
+      state = newState;
+    }
+      return;
+    case "inGame": {
+      const didFail = state.room.ownId in state.lostBalls
+
+      const newBall = initBall()
+      const newState: InGameState = {
+        state: "inGame",
+        room: state.room,
+        isHost: state.isHost,
+        ballColor: state.ballColor,
+        ourBall: newBall,
+        ourLives: didFail ? 0 : 5 + state.ourLives,
+        spectating: didFail,
+        otherBalls: {},
+        finishedBalls: {},
+        lostBalls: {},
+        mapSeed: seed,
+        platforms: createHole(seed, newBall),
+        ticksLeft: 60 * 50,
+        cachedColors: state.cachedColors,
+        hostId: state.hostId,
+        totalTicksLived: state.totalTicksLived,
+        ticksLivedThisHole: 0
+      }
+      newBall.prevPos.set(newBall.pos)
+
+      newState.room.recvBallState((bs, pid) => {
+        newState.otherBalls[pid] = bs
+      })
+      newState.room.recvHoleLost((hl, pid) => {
+        newState.lostBalls[pid] = hl
+      })
+      newState.room.recvHoleFinished((hl, pid) => {
+        newState.finishedBalls[pid] = hl
+      })
+
+      if(didFail) {
+        initGiveUp(newState)
+      }
+
+      state = newState;
+    }
+      return;
+    default: return;
   }
 }
 
@@ -519,71 +642,110 @@ function transitionToLobbyAsNonHost(connectingState: ConnectingState) {
     color: newState.colors[newState.room.ownId],
   })
 
+  newState.room.recvStartHole(hole => {
+    nextHole(hole)
+  })
+
   state = newState
 }
 
-const bgmSeeds = [1013, 1023, 1024];
-
-function initInGame(_difficulty: number) {
-  courseDifficulty = _difficulty;
-  ballCount = 0;
-  holeCount = 0;
-  courseTime = 0;
-  goToNextHole();
+function hostAdvanceHole(igs: InGameState) {
+  hostHoleSeedIdx++;
+  if(hostHoleSeedIdx >= holeSeeds.length) {
+    hostToLeaderboard(igs)
+  } else {
+    const newSeed = holeSeeds[hostHoleSeedIdx]
+    igs.room.sendStartHole(newSeed)
+    nextHole(newSeed)
+  }
 }
 
-function updateInGame() {
-  drawHole();
-  color(ball.state === "shot" && ball.basePower < 1 ? "yellow" : "black");
-  char("a", ball.pos);
-  if (ball.state === "shot") {
-    updateShotState();
-  } else if (ball.state === "power") {
-    sss.stopMml();
-    updatePowerState();
-  } else if (ball.state === "fly") {
-    updateFlyState();
+function updateInGame(inGameState: InGameState) {
+  const ball = inGameState.ourBall
+
+  drawHole(inGameState.platforms);
+
+  for(let pid in inGameState.otherBalls) {
+    const otherBall = inGameState.otherBalls[pid]
+    if(!otherBall.spectating) {
+      // @ts-ignore
+      color("light_" + otherBall.color)
+      char("a", otherBall.x, otherBall.y)
+    }
   }
+
+  color(ball.state === "shot" && ball.basePower < 1 ? "yellow" : inGameState.ballColor);
+
+  if(inGameState.spectating) {
+    // TODO if the host and _all_ players are spectating,
+    // - if players with nonzero lives exist, go to next hole
+    // - otherwise, go to leaderboard
+    if(inGameState.isHost) {
+      const shouldAdvance = Object.values(inGameState.otherBalls).every(p => p.spectating)
+      const shouldLeaderboard = (
+          Object.keys(inGameState.finishedBalls).length == 0 &&
+          (Object.keys(inGameState.finishedBalls).length + Object.keys(inGameState.lostBalls).length >=
+              inGameState.room.getPeerIds().length + 1)
+      )
+
+      if (shouldAdvance) {
+        if (shouldLeaderboard) {
+          hostToLeaderboard(inGameState)
+        } else {
+          hostAdvanceHole(inGameState)
+        }
+      }
+    }
+
+    text("Spectating...", 24, 12)
+  } else {
+    char("a", ball.pos);
+    if (ball.state === "shot") {
+      updateShotState(inGameState);
+    } else if (ball.state === "power") {
+      sss.stopMml();
+      updatePowerState(inGameState);
+    } else if (ball.state === "fly") {
+      updateFlyState(inGameState);
+    }
+    inGameState.ticksLivedThisHole++;
+  }
+
+  inGameState.room.sendBallState({
+    x: ball.pos.x,
+    y: ball.pos.y,
+    vx: ball.vel.x,
+    vy: ball.vel.y,
+    lives: inGameState.ourLives,
+    color: inGameState.ballColor,
+    spectating: inGameState.spectating,
+  })
+
   color("black");
-  if (instructionTicks > 0) {
-    instructionTicks--;
-    text("[Hold] to adjust power", 20, 60);
-    text("[Release] to shoot", 20, 68);
+
+  if(inGameState.ticksLeft > 0) {
+    inGameState.ticksLeft--;
   }
-  if (holeStartingTicks > 0) {
-    holeStartingTicks--;
-    text(`HOLE ${holeCount}`, 10, 95);
-  }
-  courseTime++;
-  drawBallAndTime();
+
+  drawBallAndTime(inGameState);
 }
 
-function drawBallAndTime() {
+function drawBallAndTime(igs: InGameState) {
   color("black");
   char("a", 3, 4);
-  text(`x${ballCount}`, 9, 3);
-  drawTime(courseTime, 110, 3);
+  text(`x${igs.ourLives}`, 9, 3);
+  drawTime(igs.ticksLeft, 110, 3);
 }
 
+let hostHoleSeedIdx = 0
 const holeSeeds = [
-  [71, 45, 9],
-  [49, 7, 98, 31, 54, 99],
-  [15, 4, 67, 5, 90, 53, 79, 85, 78],
+  71, 45, 9,
+  49, 7, 98, 31, 54, 99,
+  15, 4, 67, 5, 90, 53, 79, 85, 78,
 ];
 
-function goToNextHole() {
-  state = "inGame";
-  initBall();
-  createHole(holeSeeds[courseDifficulty][holeCount]);
-  ball.prevPos.set(ball.pos);
-  holeStartingTicks = 120;
-  holeCount++;
-  ballCount += 5;
-  initBallShotState();
-}
-
-function initBall() {
-  ball = {
+function initBall(): Ball {
+  return {
     pos: vec(5, 83),
     prevPos: vec(),
     vel: vec(),
@@ -596,7 +758,9 @@ function initBall() {
   };
 }
 
-function updateShotState() {
+function updateShotState(igs: InGameState) {
+  const ball = igs.ourBall
+
   ball.angle += ball.angleVel * 0.05;
   if (
     (ball.angle < -PI && ball.angleVel < 0) ||
@@ -605,7 +769,8 @@ function updateShotState() {
     ball.angleVel = -ball.angleVel;
     ball.angle += ball.angleVel * 0.05 * 2;
   }
-  color("light_black");
+  // @ts-ignore
+  color("light_" + igs.ballColor);
   line(ball.pos, vec(ball.pos).addWithAngle(ball.angle, 9), 2);
   if (input.isJustPressed) {
     sss.stopMml();
@@ -614,19 +779,24 @@ function updateShotState() {
   }
 }
 
-function updatePowerState() {
+function updatePowerState(igs: InGameState) {
+  const ball = igs.ourBall
+
   ball.power += 0.2;
-  color("light_black");
+  // @ts-ignore
+  color("light_" + igs.ballColor);
   line(ball.pos, vec(ball.pos).addWithAngle(ball.angle, ball.power), 2);
   if (ball.power > 9 || input.isJustReleased) {
     play("laser");
     ball.vel.set().addWithAngle(ball.angle, ball.power * 0.5 * ball.basePower);
     ball.state = "fly";
-    ballCount--;
+    igs.ourLives--;
   }
 }
 
-function updateFlyState() {
+function updateFlyState(igs: InGameState) {
+  const ball = igs.ourBall
+
   const p = vec();
   color("transparent");
   p.set(ball.pos).add(ball.vel.x, 0);
@@ -663,18 +833,18 @@ function updateFlyState() {
     ball.vel.x *= vr;
     if (ball.vel.y < 0 && ball.vel.length < 0.5) {
       if (cv.white) {
-        initGoToNextHole();
+        initGoToNextHole(igs);
         return;
-      } else if (ballCount <= 0) {
-        initGiveUp();
+      } else if (igs.ourLives <= 0) {
+        initGiveUp(igs);
         return;
       }
-      initBallShotState();
+      initBallShotState(igs);
       ball.basePower = cv.yellow ? 0.5 : 1;
       if (cv.blue) {
         color("blue");
         particle(ball.pos.x, ball.pos.y + 2, 9, 0.5, -PI / 2, PI / 2);
-        backToPrevBallPos();
+        backToPrevBallPos(igs);
       }
       ball.prevPos.set(ball.pos);
       ball.prevBasePower = ball.basePower;
@@ -685,28 +855,34 @@ function updateFlyState() {
   ball.vel.mul(0.98);
   ball.vel.y += 0.1;
   if (ball.pos.y > 110) {
-    if (ballCount <= 0) {
-      initGiveUp();
+    if (igs.ourLives <= 0) {
+      initGiveUp(igs);
       return;
     }
-    backToPrevBallPos();
-    initBallShotState();
+    backToPrevBallPos(igs);
+    initBallShotState(igs);
   }
 }
 
-function backToPrevBallPos() {
+function backToPrevBallPos(igs: InGameState) {
+  const ball = igs.ourBall
+
   play("explosion");
   ball.pos.set(ball.prevPos);
   ball.basePower = ball.prevBasePower;
 }
 
-function initBallShotState() {
+function initBallShotState(igs: InGameState) {
+  const ball = igs.ourBall
+
   ball.state = "shot";
   ball.power = 0.1;
-  sss.playMml(sss.generateMml({ seed: bgmSeeds[courseDifficulty] }));
+
+  // FIXME
+  // sss.playMml(sss.generateMml({ seed: bgmSeeds[courseDifficulty] }));
 }
 
-function drawHole() {
+function drawHole(platforms: Platform[]) {
   platforms.forEach(p => {
     color("red");
     rect(p.pos.x, p.pos.y, p.grounds.length * 6, -2);
@@ -758,13 +934,12 @@ function drawFlag(x: number, y: number) {
   rect(x + 3, y - 6, 5, -4);
 }
 
-let goToNextHoleTicks: number;
-
-function initGoToNextHole() {
-  if (holeCount === holeSeeds[courseDifficulty].length) {
-    initHoleOut();
-    return;
-  }
+function initGoToNextHole(igs: InGameState) {
+  // TODO if host
+  // if (hostHoleSeedIdx === holeSeeds.length) {
+  //   initHoleOut();
+  //   return;
+  // }
   sss.playMml(
     sss.generateMml({
       seed: 1,
@@ -774,63 +949,122 @@ function initGoToNextHole() {
     }),
     { isLooping: false, speed: 2 }
   );
-  state = "goToNextHole";
-  goToNextHoleTicks = 0;
-}
-
-function updateGoToNextHole() {
-  drawHole();
-  color("black");
-  text("GO TO NEXT HOLE", 30, 50);
-  drawBallAndTime();
-  goToNextHoleTicks++;
-  if (goToNextHoleTicks > 150 || input.isJustPressed) {
-    goToNextHole();
+  igs.spectating = true;
+  igs.totalTicksLived += igs.ticksLivedThisHole;
+  const payload = {
+    holeTicksLived: igs.ticksLivedThisHole,
+    totalTicksLived: igs.totalTicksLived,
   }
+  igs.room.sendHoleFinished(payload)
+  igs.finishedBalls[igs.room.ownId] = payload
+  igs.ticksLivedThisHole = 0;
 }
 
-let giveUpTicks: number;
-
-function initGiveUp() {
-  state = "giveUp";
-  giveUpTicks = 0;
+function initGiveUp(igs: InGameState) {
+  igs.spectating = true;
+  igs.totalTicksLived += igs.ticksLivedThisHole;
+  const payload = { totalTicksLived: igs.totalTicksLived }
+  igs.room.sendHoleLost(payload)
+  igs.lostBalls[igs.room.ownId] = payload
+  igs.ticksLivedThisHole = 0;
 }
 
-function updateGiveUp() {
-  drawHole();
-  color("black");
-  text("GIVE UP", 20, 50);
-  giveUpTicks++;
-  if (giveUpTicks > 300 || input.isJustPressed) {
-    initGame();
+function initLeaderboard(igs: InGameState, go: GameOverPayload) {
+  const newState: LeaderboardState = {
+    state: "leaderboard",
+    room: igs.room,
+    isHost: igs.isHost,
+    winners: go.winners,
+    losers: go.losers,
+    colors: igs.cachedColors,
+    hostId: igs.hostId
   }
+
+  state = newState
 }
 
-let holeOutTicks: number;
+function returnToLobbyFromLeaderboard() {
+  const ls = state as LeaderboardState
 
-function initHoleOut() {
-  state = "holeOut";
-  holeOutTicks = 0;
-  sss.playMml(
-    sss.generateMml({
-      seed: 9,
-      noteLength: 16,
-      partCount: 2,
-      drumPartRatio: 0,
-    }),
-    { isLooping: false, speed: 2 }
-  );
-}
-
-function updateHoleOut() {
-  drawHole();
-  color("black");
-  text("HOLE OUT!", 70, 50);
-  drawBallAndTime();
-  holeOutTicks++;
-  if (holeOutTicks > 600 || input.isJustPressed) {
-    initGame();
+  const newState: LobbyState = {
+    state: "lobby",
+    room: ls.room,
+    isHost: ls.isHost,
+    readies: { [ls.room.ownId]: false },
+    colors: ls.colors,
+    hostId: ls.hostId
   }
+
+  newState.room.recvLobbyInfo((li, pid) => {
+    newState.readies[pid] = li.ready
+    newState.colors[pid] = li.color
+  })
+
+  newState.room.sendLobbyInfoRequest(null)
+
+  newState.room.sendLobbyInfo({
+    ready: newState.readies[newState.room.ownId],
+    color: newState.colors[newState.room.ownId],
+  })
+
+  newState.room.recvStartHole(hole => {
+    nextHole(hole)
+  })
+
+  readyButton.isSelected = false
+  state = newState
+}
+
+function hostToLeaderboard(igs: InGameState) {
+  let winners: Record<string, number> = {}
+  for(let pid in igs.finishedBalls) {
+    winners[pid] = igs.finishedBalls[pid].totalTicksLived
+  }
+  let losers: Record<string, number> = {}
+  for(let pid in igs.lostBalls) {
+    losers[pid] = igs.lostBalls[pid].totalTicksLived
+  }
+
+  const go: GameOverPayload = {
+    winners: winners,
+    losers: losers
+  }
+
+  igs.room.sendGameOver(go)
+  initLeaderboard(igs, go)
+}
+
+function updateLeaderboard(ls: LeaderboardState) {
+  let placement: number = 1
+
+  let pidListLtg = Object.entries(ls.winners)
+      .sort(([_, at], [__, bt]) => at - bt)
+      .map(([pid, _]) => pid)
+  for(let pid of pidListLtg) {
+    text(`${placement}.`, 50, placement * 8)
+    char("a", 62, placement * 8, { color: ls.colors[pid] })
+
+    color("green")
+    drawTime(ls.winners[pid], 70, placement * 8)
+    color("black")
+
+    placement++
+  }
+  let pidLstGtl = Object.entries(ls.losers)
+      .sort(([_, at], [__, bt]) => at - bt)
+      .map(([pid, _]) => pid)
+  for(let pid of pidLstGtl) {
+    text(`${placement}.`, 50, placement * 8)
+    char("a", 62, placement * 8, { color: ls.colors[pid] })
+
+    color("red")
+    drawTime(ls.losers[pid], 70, placement * 8)
+    color("black")
+
+    placement++
+  }
+
+  updateButton(backToLobbyButton)
 }
 
 class Random {
@@ -887,9 +1121,9 @@ class Random {
 
 const random = new Random();
 
-function createHole(seed: number) {
+function createHole(seed: number, ball: Ball): Platform[] {
   random.setSeed(seed);
-  platforms = [];
+  const platforms = [];
   const pc = random.getInt(1, 3);
   let y = 90;
   let w = 25;
@@ -900,19 +1134,20 @@ function createHole(seed: number) {
     }
   }
   ball.pos.y = y - 7;
-  addPlatform(vec(0, y), w, false, true);
+  platforms.push(makePlatform(vec(0, y), w, false, true));
   times(pc, (i) => {
     const w = random.getInt(9, 20);
-    addPlatform(
+    platforms.push(makePlatform(
       vec(random.getInt(150 - w * 6), random.getInt(30, 70)),
       w,
       i === pc - 1,
       false
-    );
+    ));
   });
+  return platforms;
 }
 
-function addPlatform(pos: Vector, width: number, hasHole: boolean, hasTeeing: boolean) {
+function makePlatform(pos: Vector, width: number, hasHole: boolean, hasTeeing: boolean): Platform {
   const grounds = times(width, () => ({ type: "fairway" }));
   addGround(grounds, "tree");
   if (random.get() < 0.7) {
@@ -932,7 +1167,7 @@ function addPlatform(pos: Vector, width: number, hasHole: boolean, hasTeeing: bo
       grounds[i] = { type: "fairway" };
     });
   }
-  platforms.push({ pos, grounds });
+  return { pos, grounds };
 }
 
 function addGround(grounds: Ground[], type: string) {
