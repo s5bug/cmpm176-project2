@@ -194,6 +194,8 @@ let readyButton: Button;
 let changeColorButton: Button;
 let startGameButton: Button;
 
+// FIXME
+// @ts-ignore
 let backToLobbyButton: Button;
 
 function initGame() {
@@ -1049,7 +1051,7 @@ function updateLeaderboard(ls: LeaderboardState) {
   let placement: number = 1
 
   let pidList = Object.entries(ls.strokeCount)
-      .sort(([_, at], [__, bt]) => bt - at)
+      .sort(([_, at], [__, bt]) => at - bt)
       .map(([pid, _]) => pid)
   for(let pid of pidList) {
     text(`${placement}.`, 50, placement * 8)
@@ -1059,7 +1061,7 @@ function updateLeaderboard(ls: LeaderboardState) {
     placement++
   }
 
-  updateButton(backToLobbyButton)
+  // updateButton(backToLobbyButton)
 }
 
 class Random {
