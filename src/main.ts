@@ -7,7 +7,7 @@ import {
   RawGolfRoom,
   hostMpRoom, joinMpRoom,
   NameAndPass, numColors, numShapes,
-  PassLetter, BallStatePayload, HoleFinishedPayload, HoleLostPayload, GameOverPayload
+  PassLetter, BallStatePayload, HoleFinishedPayload, GameOverPayload
 } from "./multiplayer.ts";
 
 (window as any).sss = sss;
@@ -43,11 +43,10 @@ type InGameState = {
   isHost: boolean,
   ballColor: Color,
   ourBall: Ball,
-  ourLives: number,
+  ourStrokes: number,
   otherBalls: Record<string, BallStatePayload>,
   spectating: boolean,
   finishedBalls: Record<string, HoleFinishedPayload>,
-  lostBalls: Record<string, HoleLostPayload>
   mapSeed: number,
   platforms: Platform[],
   ticksLeft: number,
@@ -60,8 +59,7 @@ type LeaderboardState = {
   state: "leaderboard",
   room: RawGolfRoom,
   isHost: boolean,
-  winners: Record<string, number>,
-  losers: Record<string, number>,
+  strokeCount: Record<string, number>,
   colors: Record<string, Color>,
   hostId: string,
 }
@@ -436,11 +434,10 @@ function nextHole(seed: number) {
         isHost: state.isHost,
         ballColor: state.colors[state.room.ownId],
         ourBall: ball,
-        ourLives: 5,
+        ourStrokes: 0,
         spectating: false,
         otherBalls: {},
         finishedBalls: {},
-        lostBalls: {},
         mapSeed: seed,
         platforms: createHole(seed, ball),
         ticksLeft: 60 * 50,
@@ -454,11 +451,14 @@ function nextHole(seed: number) {
       newState.room.recvBallState((bs, pid) => {
         newState.otherBalls[pid] = bs
       })
-      newState.room.recvHoleLost((hl, pid) => {
-        newState.lostBalls[pid] = hl
-      })
       newState.room.recvHoleFinished((hl, pid) => {
+        if(Object.keys(newState.finishedBalls).length == 0) {
+          newState.room.sendFinishedFirst(null, pid)
+        }
         newState.finishedBalls[pid] = hl
+      })
+      newState.room.recvFinishedFirst(() => {
+        newState.ourStrokes -= 3
       })
       newState.room.recvGameOver(go => {
         initLeaderboard(state as InGameState, go)
@@ -474,8 +474,6 @@ function nextHole(seed: number) {
     }
       return;
     case "inGame": {
-      const didFail = state.room.ownId in state.lostBalls
-
       const newBall = initBall()
       const newState: InGameState = {
         state: "inGame",
@@ -483,11 +481,10 @@ function nextHole(seed: number) {
         isHost: state.isHost,
         ballColor: state.ballColor,
         ourBall: newBall,
-        ourLives: didFail ? 0 : 5 + state.ourLives,
-        spectating: didFail,
+        ourStrokes: state.ourStrokes,
+        spectating: false,
         otherBalls: {},
         finishedBalls: {},
-        lostBalls: {},
         mapSeed: seed,
         platforms: createHole(seed, newBall),
         ticksLeft: 60 * 50,
@@ -501,11 +498,14 @@ function nextHole(seed: number) {
       newState.room.recvBallState((bs, pid) => {
         newState.otherBalls[pid] = bs
       })
-      newState.room.recvHoleLost((hl, pid) => {
-        newState.lostBalls[pid] = hl
-      })
       newState.room.recvHoleFinished((hl, pid) => {
+        if(Object.keys(newState.finishedBalls).length == 0) {
+          newState.room.sendFinishedFirst(null, pid)
+        }
         newState.finishedBalls[pid] = hl
+      })
+      newState.room.recvFinishedFirst(() => {
+        newState.ourStrokes -= 3
       })
       newState.room.recvCollision(coll => {
         if(newState.ourBall.pos.y > 0) {
@@ -513,10 +513,6 @@ function nextHole(seed: number) {
           newState.ourBall.vel.add((coll.initiatorVx + Math.random()) * 0.8, (coll.initiatorVy + Math.random()) * 0.8)
         }
       })
-
-      if(didFail) {
-        initGiveUp(newState)
-      }
 
       state = newState;
     }
@@ -655,6 +651,13 @@ function transitionToLobbyAsNonHost(connectingState: ConnectingState) {
   })
 
   newState.room.recvStartHole(hole => {
+    switch (state.state) {
+      case "inGame":
+        if(!(state.room.ownId in state.finishedBalls))
+          state.ourStrokes += 7;
+        break;
+      default: break;
+    }
     nextHole(hole)
   })
 
@@ -694,18 +697,9 @@ function updateInGame(inGameState: InGameState) {
     // - otherwise, go to leaderboard
     if(inGameState.isHost) {
       const shouldAdvance = Object.values(inGameState.otherBalls).every(p => p.spectating)
-      const shouldLeaderboard = (
-          Object.keys(inGameState.finishedBalls).length == 0 &&
-          (Object.keys(inGameState.finishedBalls).length + Object.keys(inGameState.lostBalls).length >=
-              inGameState.room.getPeerIds().length + 1)
-      )
 
       if (shouldAdvance) {
-        if (shouldLeaderboard) {
-          hostToLeaderboard(inGameState)
-        } else {
-          hostAdvanceHole(inGameState)
-        }
+        hostAdvanceHole(inGameState)
       }
     }
 
@@ -728,7 +722,7 @@ function updateInGame(inGameState: InGameState) {
     y: ball.pos.y,
     vx: ball.vel.x,
     vy: ball.vel.y,
-    lives: inGameState.ourLives,
+    strokes: inGameState.ourStrokes,
     color: inGameState.ballColor,
     spectating: inGameState.spectating,
   })
@@ -737,15 +731,19 @@ function updateInGame(inGameState: InGameState) {
 
   if(inGameState.ticksLeft > 0) {
     inGameState.ticksLeft--;
+  } else if(inGameState.isHost) {
+    inGameState.ourStrokes += 7;
+    hostAdvanceHole(inGameState)
   }
 
   drawBallAndTime(inGameState);
 }
 
 function drawBallAndTime(igs: InGameState) {
-  color("black");
+  color(igs.ballColor);
   char("a", 3, 4);
-  text(`x${igs.ourLives}`, 9, 3);
+  color("black")
+  text(`score: ${igs.ourStrokes}`, 9, 3);
   drawTime(igs.ticksLeft, 110, 3);
 }
 
@@ -803,7 +801,7 @@ function updatePowerState(igs: InGameState) {
     play("laser");
     ball.vel.set().addWithAngle(ball.angle, ball.power * 0.5 * ball.basePower);
     ball.state = "fly";
-    igs.ourLives--;
+    igs.ourStrokes++;
   }
 }
 
@@ -848,15 +846,13 @@ function updateFlyState(igs: InGameState) {
       if (cv.white) {
         initGoToNextHole(igs);
         return;
-      } else if (igs.ourLives <= 0) {
-        initGiveUp(igs);
-        return;
       }
       initBallShotState(igs);
       ball.basePower = cv.yellow ? 0.5 : 1;
       if (cv.blue) {
         color("blue");
         particle(ball.pos.x, ball.pos.y + 2, 9, 0.5, -PI / 2, PI / 2);
+        igs.ourStrokes++;
         backToPrevBallPos(igs);
       }
       ball.prevPos.set(ball.pos);
@@ -882,10 +878,7 @@ function updateFlyState(igs: InGameState) {
   ball.vel.mul(0.98);
   ball.vel.y += 0.1;
   if (ball.pos.y > 110) {
-    if (igs.ourLives <= 0) {
-      initGiveUp(igs);
-      return;
-    }
+    igs.ourStrokes++;
     backToPrevBallPos(igs);
     initBallShotState(igs);
   }
@@ -962,11 +955,6 @@ function drawFlag(x: number, y: number) {
 }
 
 function initGoToNextHole(igs: InGameState) {
-  // TODO if host
-  // if (hostHoleSeedIdx === holeSeeds.length) {
-  //   initHoleOut();
-  //   return;
-  // }
   sss.playMml(
     sss.generateMml({
       seed: 1,
@@ -983,16 +971,10 @@ function initGoToNextHole(igs: InGameState) {
     totalTicksLived: igs.totalTicksLived,
   }
   igs.room.sendHoleFinished(payload)
+  if(igs.isHost && Object.keys(igs.finishedBalls).length == 0) {
+    igs.ourStrokes -= 3
+  }
   igs.finishedBalls[igs.room.ownId] = payload
-  igs.ticksLivedThisHole = 0;
-}
-
-function initGiveUp(igs: InGameState) {
-  igs.spectating = true;
-  igs.totalTicksLived += igs.ticksLivedThisHole;
-  const payload = { totalTicksLived: igs.totalTicksLived }
-  igs.room.sendHoleLost(payload)
-  igs.lostBalls[igs.room.ownId] = payload
   igs.ticksLivedThisHole = 0;
 }
 
@@ -1001,8 +983,7 @@ function initLeaderboard(igs: InGameState, go: GameOverPayload) {
     state: "leaderboard",
     room: igs.room,
     isHost: igs.isHost,
-    winners: go.winners,
-    losers: go.losers,
+    strokeCount: go.strokeCount,
     colors: igs.cachedColors,
     hostId: igs.hostId
   }
@@ -1043,18 +1024,21 @@ function returnToLobbyFromLeaderboard() {
 }
 
 function hostToLeaderboard(igs: InGameState) {
-  let winners: Record<string, number> = {}
-  for(let pid in igs.finishedBalls) {
-    winners[pid] = igs.finishedBalls[pid].totalTicksLived
+  // add 7 to balls that didn't make it because they can't themselves
+  let strokeCounts: Record<string, number> = {}
+  for(let pid in igs.otherBalls) {
+    if(pid in igs.finishedBalls) {
+      strokeCounts[pid] = igs.otherBalls[pid].strokes
+    } else {
+      strokeCounts[pid] = igs.otherBalls[pid].strokes + 7
+    }
   }
-  let losers: Record<string, number> = {}
-  for(let pid in igs.lostBalls) {
-    losers[pid] = igs.lostBalls[pid].totalTicksLived
-  }
+  // and ourselves
+  if(igs.room.ownId in igs.finishedBalls) strokeCounts[igs.room.ownId] = igs.ourStrokes
+  else strokeCounts[igs.room.ownId] = igs.ourStrokes + 7
 
   const go: GameOverPayload = {
-    winners: winners,
-    losers: losers
+    strokeCount: strokeCounts
   }
 
   igs.room.sendGameOver(go)
@@ -1064,29 +1048,13 @@ function hostToLeaderboard(igs: InGameState) {
 function updateLeaderboard(ls: LeaderboardState) {
   let placement: number = 1
 
-  let pidListLtg = Object.entries(ls.winners)
-      .sort(([_, at], [__, bt]) => at - bt)
+  let pidList = Object.entries(ls.strokeCount)
+      .sort(([_, at], [__, bt]) => bt - at)
       .map(([pid, _]) => pid)
-  for(let pid of pidListLtg) {
+  for(let pid of pidList) {
     text(`${placement}.`, 50, placement * 8)
     char("a", 62, placement * 8, { color: ls.colors[pid] })
-
-    color("green")
-    drawTime(ls.winners[pid], 70, placement * 8)
-    color("black")
-
-    placement++
-  }
-  let pidLstGtl = Object.entries(ls.losers)
-      .sort(([_, at], [__, bt]) => at - bt)
-      .map(([pid, _]) => pid)
-  for(let pid of pidLstGtl) {
-    text(`${placement}.`, 50, placement * 8)
-    char("a", 62, placement * 8, { color: ls.colors[pid] })
-
-    color("red")
-    drawTime(ls.losers[pid], 70, placement * 8)
-    color("black")
+    text(`${ls.strokeCount[pid]} strokes`, 70, placement * 8)
 
     placement++
   }
