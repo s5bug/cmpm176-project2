@@ -1,5 +1,5 @@
 import {FirebaseOptions, initializeApp } from 'firebase/app';
-import {joinRoom, selfId} from 'trystero/firebase';
+import {ActionReceiver, ActionSender, getOccupants, joinRoom, Room, selfId} from 'trystero/firebase';
 
 export enum Shape {
     CIRCLE,
@@ -93,27 +93,142 @@ const generateNameAndPass = (): NameAndPass => {
     }
 }
 
-export interface GolfRoom {
-    nameAndPass: NameAndPass;
+export type LobbyInfoPayload = {
+    color: Color,
+    ready: boolean
+}
 
-    getPlayerIds(): string[];
-    // the Owner is the main source of trust, even though this is fully p2p
-    // we want to minimize the amount of talking ideally
-    getOwnerId(): string;
+export type BallStatePayload = {
+    x: number,
+    y: number,
+    vx: number,
+    vy: number,
+    color: Color,
+    lives: number
+}
 
-    getColor(): Color;
-    setColor(color: Color): Promise<void>;
-    getPlayerColors(): Record<string, Color>;
+export type SpectatorModePayload = {
+    totalTicksLived: number
+}
 
-    getReady(): boolean;
-    setReady(ready: boolean): Promise<void>;
-    getPlayerReadys(): string[];
+export type HoleFinishedPayload = {
+    holeTicksLived: number,
+    totalTicksLived: number
+}
 
-    // setStartGame(): Promise<void>;
-    //
-    // setTurnBegin(pos: Vector): Promise<void>;
-    // setTurnLaunched(pos: Vector, vel: Vector): Promise<void>;
-    // setTurnEnd(pos: Vector): Promise<void>;
+export type GameOverPayload = {
+    // map of Id to totalTicksLived
+    winnersLeastToGreatest: Record<string, number>,
+    losersGreatestToLeast: Record<string, number>,
+}
+
+export interface RawGolfRoom {
+    nameAndPass: NameAndPass,
+    rawRoom: Room,
+    getRoomSize(): Promise<number>,
+    getPeerIds(): string[],
+    ownId: string,
+
+    // the Host sends to all new peers unconditionally
+    sendHostInfo: ActionSender<null>,
+    recvHostInfo: ActionReceiver<null>,
+
+    // after a new peer receives Host info, it asks back for current state key
+    // if this is not a lobby (i.e. the game is in progress) the new peer will disconnect
+    sendGameStateKeyRequest: ActionSender<null>,
+    recvGameStateKeyRequest: ActionReceiver<null>,
+
+    // the host will send the current state key
+    sendGameStateKey: ActionSender<string>,
+    recvGameStateKey: ActionReceiver<string>,
+
+    // if in a multiplayer lobby, the new peer will
+    // - wait until the number of connected peers matches the room size, then transition to the lobby screen
+    // - request ready state and color from all peers
+    // - broadcast its ready state and color
+    // LobbyInfoPayload will be sent whenever ready state or color changes
+    sendLobbyInfoRequest: ActionSender<null>,
+    recvLobbyInfoRequest: ActionReceiver<null>,
+    sendLobbyInfo: ActionSender<LobbyInfoPayload>,
+    recvLobbyInfo: ActionReceiver<LobbyInfoPayload>,
+
+    // once all players are ready, the host will start the game
+    // this will be done with a `sendGameStateKey`
+    // then the first hole will be loaded with a simple broadcast of the hole seed from the host
+    sendStartHole: ActionSender<number>,
+    recvStartHole: ActionReceiver<number>,
+
+    // every player can send their own ball state
+    sendBallState: ActionSender<BallStatePayload>,
+    recvBallState: ActionReceiver<BallStatePayload>,
+    // if they run out of lives, they announce that they are entering spectator mode
+    sendSpectatorMode: ActionSender<SpectatorModePayload>,
+    recvSpectatorMode: ActionReceiver<SpectatorModePayload>,
+    // or if they complete the hole, they announce how many lives they completed it with and how many ticks it took
+    sendHoleFinished: ActionSender<HoleFinishedPayload>,
+    recvHoleFinished: ActionReceiver<HoleFinishedPayload>,
+
+    // when at least one person has finished the hole, host runs a `sendStartHole`
+    // when all holes are done, or everyone has died, host broadcasts that it's game over
+    sendGameOver: ActionSender<GameOverPayload>,
+    recvGameOver: ActionReceiver<GameOverPayload>,
+
+    // when clients are done viewing this screen, they return to the lobby screen
+    // all peers assume that all peers are not ready, and will send LobbyInfoRequests
+    // these may go unanswered when other peers are still on the game over screen
+    // clients will broadcast their LobbyInfo as soon as they return to the lobby screen
+}
+
+const createActions = (nameAndPass: NameAndPass, rawRoom: Room): RawGolfRoom => {
+    const getRoomSize = async () => {
+        const occupants = await getOccupants({
+            appId: "https://cmpm176-project2-multiplayer-default-rtdb.firebaseio.com/",
+            firebaseApp: app,
+            password: passToString(nameAndPass.pass)
+        }, passToString(nameAndPass.name))
+        return occupants.length
+    }
+    const getPeerIds = () => {
+        return Object.keys(rawRoom.getPeers())
+    }
+    const [sendHostInfo, recvHostInfo] = rawRoom.makeAction<null>("hostInfo")
+    const [sendGameStateKeyRequest, recvGameStateKeyRequest] = rawRoom.makeAction<null>("gsKeyReq")
+    const [sendGameStateKey, recvGameStateKey] = rawRoom.makeAction<string>("gsKey")
+    const [sendLobbyInfoRequest, recvLobbyInfoRequest] = rawRoom.makeAction<null>("lobInfReq")
+    const [sendLobbyInfo, recvLobbyInfo] = rawRoom.makeAction<LobbyInfoPayload>("lobInfo")
+    const [sendStartHole, recvStartHole] = rawRoom.makeAction<number>("startHole")
+    const [sendBallState, recvBallState] = rawRoom.makeAction<BallStatePayload>("ballState")
+    const [sendSpectatorMode, recvSpectatorMode] = rawRoom.makeAction<SpectatorModePayload>("spectate")
+    const [sendHoleFinished, recvHoleFinished] = rawRoom.makeAction<HoleFinishedPayload>("holeFin")
+    const [sendGameOver, recvGameOver] = rawRoom.makeAction<GameOverPayload>("gameOver")
+
+    return {
+        nameAndPass,
+        rawRoom,
+        getRoomSize,
+        getPeerIds,
+        ownId: selfId,
+        sendHostInfo,
+        recvHostInfo,
+        sendGameStateKeyRequest,
+        recvGameStateKeyRequest,
+        sendGameStateKey,
+        recvGameStateKey,
+        sendLobbyInfoRequest,
+        recvLobbyInfoRequest,
+        sendLobbyInfo,
+        recvLobbyInfo,
+        sendStartHole,
+        recvStartHole,
+        sendBallState,
+        recvBallState,
+        sendSpectatorMode,
+        recvSpectatorMode,
+        sendHoleFinished,
+        recvHoleFinished,
+        sendGameOver,
+        recvGameOver
+    }
 }
 
 const firebaseConfig: FirebaseOptions = {
@@ -128,12 +243,7 @@ const firebaseConfig: FirebaseOptions = {
 };
 const app = initializeApp(firebaseConfig);
 
-type HostInfoPayload = {
-    existingColors: Record<string, Color>,
-    existingReadies: Record<string, boolean>
-}
-
-export const hostMpRoom = (ownColor: Color): GolfRoom => {
+export const hostMpRoom = (): RawGolfRoom => {
     const nameAndPass = generateNameAndPass()
 
     const room = joinRoom({
@@ -142,70 +252,10 @@ export const hostMpRoom = (ownColor: Color): GolfRoom => {
         password: passToString(nameAndPass.pass)
     }, passToString(nameAndPass.name))
 
-    const [setColorAct, getColorAct] = room.makeAction<Color>("playerColor")
-    const playerColors: Record<string, Color> = {
-        [selfId]: ownColor
-    }
-    getColorAct((name, peer) => playerColors[peer] = name)
-
-    const [setReadyAct, getReadyAct] = room.makeAction<boolean>("ready")
-    const readies: Record<string, boolean> = {
-        [selfId]: false
-    }
-    getReadyAct((ready, peer) => readies[peer] = ready)
-
-    const [setHostInfo] = room.makeAction<HostInfoPayload>("hostInfo")
-
-    const [setReqCurState, getRequestCurrentStateAct] = room.makeAction<null>("reqCurrState")
-    getRequestCurrentStateAct((_, peerId) => {
-        setHostInfo({
-            existingColors: playerColors,
-            existingReadies: readies,
-        }, [peerId])
-    })
-
-    room.onPeerJoin(pid => setReqCurState(null, pid))
-
-    return {
-        nameAndPass: nameAndPass,
-
-        getPlayerIds(): string[] {
-            return [selfId, ...Object.keys(room.getPeers())]
-        },
-
-        getOwnerId(): string {
-            return selfId
-        },
-
-        getColor(): Color {
-            return playerColors[selfId]
-        },
-
-        async setColor(name: Color) {
-            playerColors[selfId] = name
-            await setColorAct(name)
-        },
-
-        getPlayerColors(): Record<string, Color> {
-            return playerColors
-        },
-
-        getReady(): boolean {
-            return readies[selfId]
-        },
-
-        async setReady(ready: boolean): Promise<void> {
-            readies[selfId] = ready
-            await setReadyAct(ready)
-        },
-
-        getPlayerReadys(): string[] {
-            return Object.entries(readies).flatMap(([peerId, ready]) => ready ? [peerId] : [])
-        }
-    }
+    return createActions(nameAndPass, room)
 }
 
-export const joinMpRoom = async (nap: NameAndPass, ownColor: Color): Promise<GolfRoom> => {
+export const joinMpRoom = (nap: NameAndPass): RawGolfRoom => {
     // TODO failure behavior
     const room = joinRoom({
         appId: "https://cmpm176-project2-multiplayer-default-rtdb.firebaseio.com/",
@@ -213,78 +263,5 @@ export const joinMpRoom = async (nap: NameAndPass, ownColor: Color): Promise<Gol
         password: passToString(nap.pass)
     }, passToString(nap.name))
 
-    let hostId: string = null!;
-
-    const [setColorAct, getColorAct] = room.makeAction<Color>("playerColor")
-    const playerColors: Record<string, Color> = {
-        [selfId]: ownColor
-    }
-    getColorAct((name, peer) => playerColors[peer] = name)
-
-    const [setReadyAct, getReadyAct] = room.makeAction<boolean>("ready")
-    const readies: Record<string, boolean> = {
-        [selfId]: false
-    }
-    getReadyAct((ready, peer) => readies[peer] = ready)
-
-    const [_, getHostInfo] = room.makeAction<HostInfoPayload>("hostInfo")
-    getHostInfo((info, host) => {
-        hostId = host
-        for(let id in room.getPeers()) {
-            if(id in info.existingColors) {
-                playerColors[id] = info.existingColors[id]
-            }
-            if(id in info.existingReadies) {
-                readies[id] = info.existingReadies[id]
-            }
-        }
-    })
-
-    const [setReqCurState, getReqCurState] = room.makeAction<null>("reqCurrState")
-    getReqCurState((_, peerId) => {
-        setColorAct(playerColors[selfId], [peerId])
-        setReadyAct(readies[selfId], [peerId])
-    })
-
-    room.onPeerJoin(pid => setReqCurState(null, pid))
-
-    await setReqCurState(null)
-
-    return {
-        nameAndPass: nap,
-
-        getPlayerIds(): string[] {
-            return [selfId, ...Object.keys(room.getPeers())]
-        },
-
-        getOwnerId(): string {
-            return hostId
-        },
-
-        getColor(): Color {
-            return playerColors[selfId]
-        },
-
-        async setColor(c: Color) {
-            playerColors[selfId] = c
-            await setColorAct(c)
-        },
-
-        getPlayerColors(): Record<string, Color> {
-            return playerColors
-        },
-
-        getReady(): boolean {
-            return readies[selfId]
-        },
-
-        async setReady(ready: boolean): Promise<void> {
-            readies[selfId] = ready
-            await setReadyAct(ready)
-        },
-
-        getPlayerReadys(): string[] {
-            return Object.entries(readies).flatMap(([peerId, ready]) => ready ? [peerId] : [])
-        }
-    }
+    return createActions(nap, room)
 }

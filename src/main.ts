@@ -4,15 +4,63 @@ import 'pixi.js';
 import 'pixi-filters';
 import 'crisp-game-lib';
 import {
-  GolfRoom,
+  RawGolfRoom,
   hostMpRoom, joinMpRoom,
   NameAndPass, numColors, numShapes,
-  PassLetter
+  PassLetter, BallStatePayload
 } from "./multiplayer.ts";
 
 (window as any).sss = sss;
 
-type State = "title" | "inGame" | "goToNextHole" | "giveUp" | "holeOut" | "multiLobby" | "passwordEntry";
+type TitleState = {
+  state: "title"
+}
+type PasswordEntryState = {
+  state: "passwordEntry",
+  currentSymbols: PassLetter[]
+}
+type ConnectingState = {
+  state: "connecting",
+  cachedOccupantCount: number | undefined,
+  room: RawGolfRoom,
+  hostId: string | undefined,
+  connectionFailed: string | undefined,
+  connectingStarted: number
+}
+type LobbyState = {
+  state: "lobby",
+  room: RawGolfRoom,
+  isHost: boolean,
+  readies: Record<string, boolean>,
+  colors: Record<string, Color>,
+  hostId: string,
+}
+type InGameState = {
+  state: "inGame",
+  room: RawGolfRoom,
+  isHost: boolean,
+  ballColor: Color,
+  ourBall: Ball,
+  ourLives: number,
+  otherBalls: Record<string, BallStatePayload>,
+  mapSeed: number,
+  platforms: Platform[],
+  ticksLeft: number,
+  cachedColors: Record<string, Color>,
+  hostId: string,
+}
+type LeaderboardState = {
+  state: "leaderboard",
+  room: RawGolfRoom,
+  isHost: boolean,
+  winnersLeastToGreatest: Record<string, number>,
+  losersGreatestToLeast: Record<string, number>,
+  colors: Record<string, Color>,
+  hostId: string,
+}
+
+type State = TitleState | PasswordEntryState | ConnectingState | LobbyState | InGameState | LeaderboardState;
+
 type Ground = { type: string; height?: number; };
 type Platform = { pos: Vector; grounds: Ground[]; };
 type Ball = {
@@ -125,97 +173,171 @@ function update() {
   if (!ticks) {
     document.title = "SKY GOLF";
     instructionTicks = 200;
-    initTitle();
+    initGame();
   }
-  if (state === "title") {
-    updateTitle();
-  } else if (state === "multiLobby") {
-    updateMultiLobby();
-  } else if (state === "passwordEntry") {
-    updatePasswordEntry();
-  } else if (state === "inGame") {
-    updateInGame();
-  } else if (state === "goToNextHole") {
-    updateGoToNextHole();
-  } else if (state === "giveUp") {
-    updateGiveUp();
-  } else if (state === "holeOut") {
-    updateHoleOut();
+  switch (state.state) {
+    case "title":
+      return updateTitle(state)
+    case "passwordEntry":
+      return updatePasswordEntry(state)
+    case "connecting":
+      return updateConnecting(state)
+    case "lobby":
+      return updateLobby(state)
+    case "inGame":
+      return updateInGame(state)
+    case "leaderboard":
+      return updateLeaderboard(state)
   }
 }
-
-let easyButton: Button;
-let mediumButton: Button;
-let hardButton: Button;
 
 let hostButton: Button;
 let joinButton: Button;
 
-let isHost: boolean = false;
-let room: GolfRoom = undefined!;
+let readyButton: Button;
+let changeColorButton: Button;
 
-function initTitle() {
-  state = "title";
-  easyButton = getButton({
-    text: "Easy",
+function initGame() {
+  state = { state: "title" };
+  hostButton = getButton({
+    text: "Host",
     pos: { x: 15, y: 45 },
     size: { x: 50, y: 7 },
     isToggle: false,
-    onClick: () => initInGame(0),
-  });
-  mediumButton = getButton({
-    text: "Medium",
-    pos: { x: 15, y: 55 },
-    size: { x: 50, y: 7 },
-    isToggle: false,
-    onClick: () => initInGame(1),
-  });
-  hardButton = getButton({
-    text: "Hard",
-    pos: { x: 15, y: 65 },
-    size: { x: 50, y: 7 },
-    isToggle: false,
-    onClick: () => initInGame(2),
-  });
-  hostButton = getButton({
-    text: "Host",
-    pos: { x: 15, y: 90 },
-    size: { x: 50, y: 7 },
-    isToggle: false,
-    onClick: () => {
-      isHost = true
-      room = hostMpRoom("red")
-      state = "multiLobby"
-    }
+    onClick: setupRoomHost
   });
   joinButton = getButton({
     text: "Join",
-    pos: { x: 80, y: 90 },
+    pos: { x: 15, y: 65 },
     size: { x: 50, y: 7 },
     isToggle: false,
     onClick: () => {
-      state = "passwordEntry"
+      state = {
+        state: "passwordEntry",
+        currentSymbols: []
+      }
     }
+  })
+  readyButton = getButton({
+    text: "Ready",
+    pos: { x: 4, y: 65 },
+    size: { x: 50, y: 7 },
+    isToggle: true,
+    onClick: toggleReady
+  })
+  changeColorButton = getButton({
+    text: "Color",
+    pos: { x: 4, y: 50 },
+    size: { x: 50, y: 7 },
+    isToggle: false,
+    onClick: advanceColor
   })
   initBall();
   createHole(103);
 }
 
-function updateTitle() {
+function setupRoomHost() {
+  const newRoom = hostMpRoom()
+  const newState: LobbyState = {
+    state: "lobby",
+    room: newRoom,
+    isHost: true,
+    readies: { [newRoom.ownId]: false },
+    colors: { [newRoom.ownId]: "red" },
+    hostId: newRoom.ownId
+  }
+
+  newRoom.rawRoom.onPeerJoin(pid => newRoom.sendHostInfo(null, pid))
+
+  newRoom.recvGameStateKeyRequest((_, pid) => {
+    newRoom.sendGameStateKey(state.state, pid)
+  })
+
+  newRoom.recvLobbyInfoRequest((_, pid) => {
+    switch(state.state) {
+      case "lobby":
+        newRoom.sendLobbyInfo({
+          color: state.colors[state.room.ownId],
+          ready: state.readies[state.room.ownId]
+        }, pid)
+        break;
+    }
+  })
+
+  newRoom.recvLobbyInfo((li, pid) => {
+    switch(state.state) {
+      case "lobby":
+        state.colors[pid] = li.color;
+        state.readies[pid] = li.ready;
+        break;
+    }
+  })
+
+  state = newState
+}
+
+function toggleReady() {
+  switch(state.state) {
+    case "lobby":
+      let oldReady = state.readies[state.room.ownId];
+      let newReady = !oldReady;
+      state.room.sendLobbyInfo({
+        color: state.colors[state.room.ownId],
+        ready: newReady
+      })
+      state.readies[state.room.ownId] = newReady;
+      return;
+    default: return;
+  }
+}
+
+function advanceColor() {
+  switch(state.state) {
+    case "lobby":
+      let oldColor = state.colors[state.room.ownId];
+      let newColor: Color;
+      switch(oldColor) {
+        case "red":
+          newColor = "yellow";
+          break;
+        case "yellow":
+          newColor = "green";
+          break;
+        case "green":
+          newColor = "cyan";
+          break;
+        case "cyan":
+          newColor = "blue";
+          break;
+        case "blue":
+          newColor = "purple";
+          break;
+        case "purple":
+          newColor = "red";
+          break;
+      }
+
+      state.room.sendLobbyInfo({
+        color: newColor!,
+        ready: state.readies[state.room.ownId]
+      })
+      state.colors[state.room.ownId] = newColor!;
+
+      return;
+    default: return;
+  }
+}
+
+function updateTitle(_: TitleState) {
   drawHole();
   color("black");
   text("SKY GOLF", 9, 38);
-  updateButton(easyButton);
-  text("3 holes", 75, 48);
-  updateButton(mediumButton);
-  text("6 holes", 75, 58);
-  updateButton(hardButton);
-  text("9 holes", 75, 68);
+  updateButton(hostButton);
+  text("Host Game", 75, 48);
+  updateButton(joinButton);
+  text("Join Game", 75, 68);
 
   text("Click button to start", 20, 79);
-
-  updateButton(hostButton);
-  updateButton(joinButton);
 }
 
 function drawPassLetter(x: number, y: number, passLetter: PassLetter) {
@@ -236,34 +358,79 @@ function drawPassword(x: number, y: number, password: NameAndPass) {
   drawPassLetters(x, y + 8, password.pass)
 }
 
-function updateMultiLobby() {
-  drawPassword(8, 8, room!.nameAndPass)
+function updateLobby(lobbyState: LobbyState) {
+  drawPassword(8, 8, lobbyState.room.nameAndPass)
 
-  if(isHost) {
+  if(lobbyState.isHost) {
     text("Hosting", 8, 28)
   }
 
   text("You:", 8, 40)
-  char("a", 32, 40, { color: room.getColor() })
+  char("a", 32, 40, { color: lobbyState.colors[lobbyState.room.ownId] })
 
-  const playerIds = room.getPlayerIds();
+  updateButton(changeColorButton)
+  updateButton(readyButton)
 
-  const otherPlayerIds = playerIds.slice(1)
-  text("Opponents: " + otherPlayerIds.length, 75, 4)
-  for(let i = 0; i < otherPlayerIds.length; i++) {
-    const playerId = otherPlayerIds[i];
+  const playersToReadyCheck = [lobbyState.room.ownId, ...lobbyState.room.getPeerIds()]
+  const readyPlayers = playersToReadyCheck.filter(pid => lobbyState.readies[pid])
+
+  text("Ready: " + readyPlayers.length + "/" + playersToReadyCheck.length, 8, 80)
+
+  const playerIds = lobbyState.room.getPeerIds();
+
+  text("Opponents: " + playerIds.length, 75, 4)
+  for(let i = 0; i < playerIds.length; i++) {
+    const playerId = playerIds[i];
     const x = 78 + ((i % 6) * 10);
     const y = 16 + (((i / 6) | 0) * 10);
 
-    const playerColor = room.getPlayerColors()[playerId] || "light_black";
+    const playerColor = lobbyState.colors[playerId] || "light_black";
 
     char("a", x, y, { color: playerColor });
   }
 }
 
-let currentSymbols: PassLetter[] = []
+function joinRoom(pletters: PassLetter[]) {
+  const name = pletters.slice(0, 6)
+  const pass = pletters.slice(6, 12)
 
-function updatePasswordEntry() {
+  // @ts-ignore
+  const nap: NameAndPass = { name, pass }
+
+  const newRoom = joinMpRoom(nap)
+  const newState: ConnectingState = {
+    state: "connecting",
+    cachedOccupantCount: undefined,
+    room: newRoom,
+    hostId: undefined,
+    connectionFailed: undefined,
+    connectingStarted: ticks
+  }
+
+  newRoom.recvHostInfo((_, pid) => {
+    switch(state.state) {
+      case "connecting":
+        state.hostId = pid
+        state.room.getRoomSize().then(c => {
+          if(state.state === "connecting") {
+            state.cachedOccupantCount = c
+          }
+        })
+        state.room.recvGameStateKey(gsk => {
+          if(gsk !== "lobby" && state.state === "connecting") {
+            state.connectionFailed = "Not in lobby"
+          }
+        })
+        state.room.sendGameStateKeyRequest(null, pid)
+        break;
+      default: return;
+    }
+  })
+
+  state = newState
+}
+
+function updatePasswordEntry(pentState: PasswordEntryState) {
   const gridWidth = (8 * (numColors - 1)) + 6;
   const startX = ((options.viewSize.x - gridWidth) / 2) | 0;
   const startY = 62;
@@ -281,14 +448,14 @@ function updatePasswordEntry() {
 
       if(input.isJustPressed && input.pos.x >= (x - 3) && input.pos.y >= (y - 3) &&
           input.pos.x < (x + 3) && input.pos.y < (y + 3)) {
-        if(currentSymbols.length < 12)
-          currentSymbols.push(pl)
+        if(pentState.currentSymbols.length < 12)
+          pentState.currentSymbols.push(pl)
       }
     }
   }
 
-  for(let i = 0; i < currentSymbols.length; i++) {
-    const pl = currentSymbols[i]
+  for(let i = 0; i < pentState.currentSymbols.length; i++) {
+    const pl = pentState.currentSymbols[i]
 
     const row = (i / 6) | 0;
     const column = i % 6;
@@ -299,30 +466,60 @@ function updatePasswordEntry() {
     char(plToCharacter(pl), x, y, { color: plToColor(pl) })
   }
 
-  if(currentSymbols.length > 0) {
+  if(pentState.currentSymbols.length > 0) {
     char(backspaceCharacter, 60, 48)
     if (input.isJustPressed && input.pos.x >= 57 && input.pos.y >= 45 &&
         input.pos.x < 63 && input.pos.y < 51) {
-      currentSymbols.length--;
+      pentState.currentSymbols.length--;
     }
   }
 
-  if(currentSymbols.length == 12) {
+  if(pentState.currentSymbols.length == 12) {
     char(enterCharacter, 80, 48)
     if (input.isJustPressed && input.pos.x >= 77 && input.pos.y >= 45 &&
         input.pos.x < 83 && input.pos.y < 51) {
-      isHost = false
-      joinMpRoom({
-        // @ts-ignore
-        name: currentSymbols.slice(0, 6),
-        // @ts-ignore
-        pass: currentSymbols.slice(6, 12)
-      }, "green").then(r => {
-        room = r
-        state = "multiLobby"
-      })
+      joinRoom(pentState.currentSymbols)
     }
   }
+}
+
+function updateConnecting(connectingState: ConnectingState) {
+  if(connectingState.connectionFailed) {
+    text(connectingState.connectionFailed, 50, 50)
+  } else if(connectingState.room.getPeerIds().length + 1 >= (connectingState.cachedOccupantCount || Infinity)) {
+    transitionToLobbyAsNonHost(connectingState)
+  } else {
+    text("Connecting...", 50, 50)
+    if((ticks - connectingState.connectingStarted) > 60) {
+      text("You might need to disable", 8, 70)
+      text("your VPN, if you have one", 8, 78)
+    }
+  }
+}
+
+function transitionToLobbyAsNonHost(connectingState: ConnectingState) {
+  const newState: LobbyState = {
+    state: "lobby",
+    room: connectingState.room,
+    isHost: false,
+    readies: { [connectingState.room.ownId]: false },
+    colors: { [connectingState.room.ownId]: "green" },
+    hostId: connectingState.hostId!
+  }
+
+  newState.room.recvLobbyInfo((li, pid) => {
+    newState.readies[pid] = li.ready
+    newState.colors[pid] = li.color
+  })
+
+  newState.room.sendLobbyInfoRequest(null)
+
+  newState.room.sendLobbyInfo({
+    ready: newState.readies[newState.room.ownId],
+    color: newState.colors[newState.room.ownId],
+  })
+
+  state = newState
 }
 
 const bgmSeeds = [1013, 1023, 1024];
@@ -605,7 +802,7 @@ function updateGiveUp() {
   text("GIVE UP", 20, 50);
   giveUpTicks++;
   if (giveUpTicks > 300 || input.isJustPressed) {
-    initTitle();
+    initGame();
   }
 }
 
@@ -632,7 +829,7 @@ function updateHoleOut() {
   drawBallAndTime();
   holeOutTicks++;
   if (holeOutTicks > 600 || input.isJustPressed) {
-    initTitle();
+    initGame();
   }
 }
 
