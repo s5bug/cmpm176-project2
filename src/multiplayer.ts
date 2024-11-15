@@ -123,6 +123,11 @@ export type GameOverPayload = {
     losers: Record<string, number>,
 }
 
+export type CollisionPayload = {
+    initiatorVx: number,
+    initiatorVy: number
+}
+
 export interface RawGolfRoom {
     nameAndPass: NameAndPass,
     rawRoom: Room,
@@ -178,6 +183,10 @@ export interface RawGolfRoom {
     // all peers assume that all peers are not ready, and will send LobbyInfoRequests
     // these may go unanswered when other peers are still on the game over screen
     // clients will broadcast their LobbyInfo as soon as they return to the lobby screen
+
+    // the fun and jank
+    sendCollision: ActionSender<CollisionPayload>,
+    recvCollision: ActionReceiver<CollisionPayload>
 }
 
 const createActions = (nameAndPass: NameAndPass, rawRoom: Room): RawGolfRoom => {
@@ -202,6 +211,7 @@ const createActions = (nameAndPass: NameAndPass, rawRoom: Room): RawGolfRoom => 
     const [sendHoleLost, recvHoleLost] = rawRoom.makeAction<HoleLostPayload>("holeLose")
     const [sendHoleFinished, recvHoleFinished] = rawRoom.makeAction<HoleFinishedPayload>("holeFin")
     const [sendGameOver, recvGameOver] = rawRoom.makeAction<GameOverPayload>("gameOver")
+    const [sendCollision, recvCollision] = rawRoom.makeAction<CollisionPayload>("collision")
 
     return {
         nameAndPass,
@@ -228,7 +238,9 @@ const createActions = (nameAndPass: NameAndPass, rawRoom: Room): RawGolfRoom => 
         sendHoleFinished,
         recvHoleFinished,
         sendGameOver,
-        recvGameOver
+        recvGameOver,
+        sendCollision,
+        recvCollision
     }
 }
 

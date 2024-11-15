@@ -463,6 +463,12 @@ function nextHole(seed: number) {
       newState.room.recvGameOver(go => {
         initLeaderboard(state as InGameState, go)
       })
+      newState.room.recvCollision(coll => {
+        if(newState.ourBall.pos.y > 0) {
+          newState.ourBall.state = "fly"
+          newState.ourBall.vel.add((coll.initiatorVx + Math.random()) * 0.8, (coll.initiatorVy + Math.random()) * 0.8)
+        }
+      })
 
       state = newState;
     }
@@ -500,6 +506,12 @@ function nextHole(seed: number) {
       })
       newState.room.recvHoleFinished((hl, pid) => {
         newState.finishedBalls[pid] = hl
+      })
+      newState.room.recvCollision(coll => {
+        if(newState.ourBall.pos.y > 0) {
+          newState.ourBall.state = "fly"
+          newState.ourBall.vel.add((coll.initiatorVx + Math.random()) * 0.8, (coll.initiatorVy + Math.random()) * 0.8)
+        }
       })
 
       if(didFail) {
@@ -769,6 +781,7 @@ function updateShotState(igs: InGameState) {
     ball.angleVel = -ball.angleVel;
     ball.angle += ball.angleVel * 0.05 * 2;
   }
+
   // @ts-ignore
   color("light_" + igs.ballColor);
   line(ball.pos, vec(ball.pos).addWithAngle(ball.angle, 9), 2);
@@ -851,6 +864,20 @@ function updateFlyState(igs: InGameState) {
       return;
     }
   }
+
+  // this _has_ to be like this because crisp-lib doesn't have non-mask cd
+  for(let otherPid in igs.otherBalls) {
+    if(igs.otherBalls[otherPid].spectating) continue;
+
+    const dist = ball.pos.distanceTo(igs.otherBalls[otherPid].x, igs.otherBalls[otherPid].y);
+    if(dist <= 3) {
+      igs.room.sendCollision({
+        initiatorVx: ball.vel.x,
+        initiatorVy: ball.vel.y,
+      }, otherPid)
+    }
+  }
+
   ball.pos.add(ball.vel);
   ball.vel.mul(0.98);
   ball.vel.y += 0.1;
